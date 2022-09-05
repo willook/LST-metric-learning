@@ -461,6 +461,7 @@ class Model_lst_4part(nn.Module):
         hand_list = torch.Tensor([4,5,6,7,8,9,10,11,21,22,23,24]).long()
         foot_list = torch.Tensor([12,13,14,15,16,17,18,19]).long()
         hip_list = torch.Tensor([0,1,2,12,16]).long()
+        # self.part_list[0]: linear function
         head_feature = self.part_list[0](feature[:,:,:,:,head_list].mean(4).mean(3).mean(1))
         hand_feature = self.part_list[1](feature[:,:,:,:,hand_list].mean(4).mean(3).mean(1))
         foot_feature = self.part_list[2](feature[:,:,:,:,foot_list].mean(4).mean(3).mean(1))
@@ -473,10 +474,10 @@ class Model_lst_4part(nn.Module):
         feature_dict = dict()
 
         for name in self.head:
-            feature_dict[name] = self.linear_head[name](x)
+            feature_dict[name] = self.linear_head[name](x) # linear projection
         
-        x = self.drop_out(x)
-
+        x = self.drop_out(x) # nothing
+        # self.fc: classfier
         return self.fc(x), feature_dict, self.logit_scale, [head_feature, hand_feature, hip_feature, foot_feature]
 
 

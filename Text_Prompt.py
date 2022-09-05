@@ -105,7 +105,7 @@ def text_prompt_openai_pasta_pool_4part():
     print("Use text prompt openai pasta pool")
     text_dict = {}
     num_text_aug = 5
-
+    # paste_text_map2: [[class name, head, hand, arm, hip, leg, foot] * 120]
     for ii in range(num_text_aug):
         if ii == 0:
             text_dict[ii] = torch.cat([clip.tokenize((pasta_list[ii])) for pasta_list in paste_text_map2])
@@ -117,7 +117,6 @@ def text_prompt_openai_pasta_pool_4part():
             text_dict[ii] = torch.cat([clip.tokenize((pasta_list[0] +','+ pasta_list[4])) for pasta_list in paste_text_map2])
         else:
             text_dict[ii] = torch.cat([clip.tokenize((pasta_list[0]+','+','.join(pasta_list[5:]))) for pasta_list in paste_text_map2])
-
 
     classes = torch.cat([v for k, v in text_dict.items()])
     

@@ -29,11 +29,13 @@ from tqdm import tqdm
 from torchlight import DictAction
 from tools import *
 from Text_Prompt import *
-from KLLoss import KLLoss
+from losses import KLLoss, Proxy_Anchor
+
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning) 
 
 classes, num_text_aug, text_dict = text_prompt_openai_pasta_pool_4part()
 text_list = text_prompt_openai_random()
-
 
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -106,7 +108,7 @@ def get_parser():
     parser.add_argument(
         '--save-interval',
         type=int,
-        default=1,
+        default=10,
         help='the interval for storing models (#iteration)')
     parser.add_argument(
         '--save-epoch',
@@ -186,9 +188,9 @@ def get_parser():
     parser.add_argument(
         '--nesterov', type=str2bool, default=False, help='use nesterov or not')
     parser.add_argument(
-        '--batch-size', type=int, default=256, help='training batch size')
+        '--batch-size', type=int, default=32, help='training batch size')
     parser.add_argument(
-        '--test-batch-size', type=int, default=256, help='test batch size')
+        '--test-batch-size', type=int, default=32, help='test batch size')
     parser.add_argument(
         '--start-epoch',
         type=int,
@@ -247,12 +249,14 @@ class Processor():
                 self.train_writer = self.val_writer = SummaryWriter(os.path.join(arg.model_saved_name, 'test'), 'test')
         self.global_step = 0
         # pdb.set_trace()
+        print("load model...")
         self.load_model()
 
         if self.arg.phase == 'model_size':
             pass
         else:
             self.load_optimizer()
+            print("load data...")
             self.load_data()
         self.lr = self.arg.base_lr
         self.best_acc = 0
@@ -308,9 +312,11 @@ class Processor():
         shutil.copy2(inspect.getfile(Model), self.arg.work_dir)
         print(Model)
         self.model = Model(**self.arg.model_args)
-        print(self.model)
+        # print(self.model)
         self.loss_ce = nn.CrossEntropyLoss().cuda(output_device)
         self.loss = KLLoss().cuda(output_device)
+        self.loss_me = Proxy_Anchor(nb_classes = self.arg.model_args['num_class'], 
+                                    sz_embed = 512, mrg = 0.1, alpha = 32).cuda()
 
         self.model_text_dict = nn.ModuleDict()
 
@@ -359,14 +365,17 @@ class Processor():
         if self.arg.optimizer == 'SGD':
             self.optimizer = optim.SGD(
                 [{'params': self.model.parameters(),'lr': self.arg.base_lr},
-                {'params': self.model_text_dict.parameters(), 'lr': self.arg.base_lr*self.arg.te_lr_ratio}],
+                {'params': self.model_text_dict.parameters(), 'lr': self.arg.base_lr*self.arg.te_lr_ratio},
+                {'params': self.loss_me.parameters(), 'lr': self.arg.base_lr}],
                 lr=self.arg.base_lr,
                 momentum=0.9,
                 nesterov=self.arg.nesterov,
                 weight_decay=self.arg.weight_decay)
         elif self.arg.optimizer == 'Adam':
             self.optimizer = optim.Adam(
-                self.model.parameters(),
+                [{'params': self.model.parameters(),'lr': self.arg.base_lr},
+                {'params': self.loss_me.parameters(), 'lr': self.arg.base_lr}],
+                #self.model.parameters(),
                 lr=self.arg.base_lr,
                 weight_decay=self.arg.weight_decay)
         else:
@@ -444,7 +453,7 @@ class Processor():
             with torch.cuda.amp.autocast():
                 output, feature_dict, logit_scale, part_feature_list = self.model(data)
 
-                label_g = gen_label(label)
+                label_g = gen_label(label) # n by n 같은 라벨 표기
                 label = label.long().cuda(self.output_device)
                 loss_te_list = []
                 for ind in range(num_text_aug):
@@ -468,6 +477,7 @@ class Processor():
 
 
                     if ind == 0:
+                        # logit: (100 x 512)
                         logits_per_image, logits_per_text = create_logits(feature_dict[self.arg.model_args['head'][0]],text_embedding,logit_scale[:,0].mean())
 
                         ground_truth = torch.tensor(label_g,dtype=feature_dict[self.arg.model_args['head'][0]].dtype,device=device)
@@ -476,11 +486,12 @@ class Processor():
 
                         ground_truth = torch.tensor(label_g,dtype=part_feature_list[ind-1].dtype,device=device)
 
-
-                    loss_imgs = self.loss(logits_per_image,ground_truth)
+                    # loss_metric = self.loss_me(feature_dict[self.arg.model_args['head'][0]], label)
+                    loss_imgs = self.loss(logits_per_image,ground_truth) # (batch size x batch size) KLLoss -> why?
                     loss_texts = self.loss(logits_per_text,ground_truth)
-
+                    
                     loss_te_list.append((loss_imgs + loss_texts) / 2)
+                    # loss_te_list.append(loss_metric)
 
                 loss_ce = self.loss_ce(output, label)
                 loss = loss_ce + self.arg.loss_alpha * sum(loss_te_list) / len(loss_te_list)
@@ -605,6 +616,7 @@ class Processor():
                 writer.writerows(confusion)
 
     def start(self):
+        print("start the processer")
         if self.arg.phase == 'train':
             self.print_log('Parameters:\n{}\n'.format(str(vars(self.arg))))
             self.global_step = self.arg.start_epoch * len(self.data_loader['train']) / self.arg.batch_size
@@ -615,7 +627,6 @@ class Processor():
             for epoch in range(self.arg.start_epoch, self.arg.num_epoch):
                 save_model = (((epoch + 1) % self.arg.save_interval == 0) or (
                         epoch + 1 == self.arg.num_epoch)) and (epoch+1) > self.arg.save_epoch
-
                 self.train(epoch, save_model=save_model)
 
                 self.eval(epoch, save_score=self.arg.save_score, loader_name=['test'])
@@ -665,7 +676,7 @@ if __name__ == '__main__':
     p = parser.parse_args()
     if p.config is not None:
         with open(p.config, 'r') as f:
-            default_arg = yaml.load(f)
+            default_arg = yaml.safe_load(f)
         key = vars(p).keys()
         for k in default_arg.keys():
             if k not in key:

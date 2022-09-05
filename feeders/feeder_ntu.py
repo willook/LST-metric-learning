@@ -48,8 +48,8 @@ class Feeder(Dataset):
         # data: N C V T M
         npz_data = np.load(self.data_path)
         if self.split == 'train':
-            self.data = npz_data['x_train']
-            self.label = np.where(npz_data['y_train'] > 0)[1]
+            self.data = npz_data['x_train'] # (35763, 300, 150)
+            self.label = np.where(npz_data['y_train'] > 0)[1] # ((35763, 60)) -> (35763,)
             self.sample_name = ['train_' + str(i) for i in range(len(self.data))]
         elif self.split == 'test':
             self.data = npz_data['x_test']

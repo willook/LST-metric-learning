@@ -29,7 +29,7 @@ from tqdm import tqdm
 from torchlight import DictAction
 from tools import *
 from Text_Prompt import *
-from KLLoss import KLLoss
+from losses import KLLoss
 
 
 classes, num_text_aug, text_dict = text_prompt_openai_pasta_pool_4part_ucla()
