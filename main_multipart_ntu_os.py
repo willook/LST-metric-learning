@@ -16,6 +16,7 @@ from sklearn.metrics import confusion_matrix
 import csv
 import numpy as np
 import glob
+from functools import partial
 
 # torch
 import torch
@@ -31,13 +32,15 @@ from torchlight import DictAction
 from tools import *
 from Text_Prompt import *
 from losses import KLLoss, Proxy_Anchor
+from model.utils import collate_fn_padd
+from pytorch_metric_learning.losses import SupConLoss, MultiSimilarityLoss
 
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning) 
 
-classes, num_text_aug, text_dict = text_prompt_openai_pasta_pool_4part()
-text_list = text_prompt_openai_random()
-
+classes, num_text_aug, text_dict = text_prompt_openai_pasta_pool_4part() # text_dict: id(0~4), [120, 77]
+num_text_aug = 1
+text_list = text_prompt_openai_random() # 120, 11, 1, 77
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -221,6 +224,8 @@ def get_parser():
     parser.add_argument('--loss-alpha', type=float, default=0.8)
     parser.add_argument('--te-lr-ratio', type=float, default=1)
     parser.add_argument('--te-trainable', action='store_true', default=False)
+    parser.add_argument('--mixing', action='store_true', default=False)
+    parser.add_argument('--test', action='store_true', default=False)
     return parser
 
 
@@ -263,28 +268,34 @@ class Processor():
         self.best_acc = 0
         self.best_acc_epoch = 0
 
-        self.model = self.model.cuda(self.output_device)
+        self.model = self.model.cuda()
+        # self.model = self.model.cuda(self.output_device)
 
-        if type(self.arg.device) is list:
-            if len(self.arg.device) > 1:
-                self.model = nn.DataParallel(
-                    self.model,
-                    device_ids=self.arg.device,
-                    output_device=self.output_device)
+        # if type(self.arg.device) is list:
+        #     if len(self.arg.device) > 1:
+        #         self.model = nn.DataParallel(
+        #             self.model,
+        #             device_ids=self.arg.device,
+        #             output_device=self.output_device)
 
-        if type(self.arg.device) is list:
-            if len(self.arg.device) > 1:
-                for name in self.arg.model_args['head']:
-                    self.model_text_dict[name] = nn.DataParallel(
-                        self.model_text_dict[name],
-                        device_ids=self.arg.device,
-                        output_device=self.output_device)
+        # if type(self.arg.device) is list:
+        #     if len(self.arg.device) > 1:
+        #         for name in self.arg.model_args['head']:
+        #             self.model_text_dict[name] = nn.DataParallel(
+        #                 self.model_text_dict[name],
+        #                 device_ids=self.arg.device,
+        #                 output_device=self.output_device)
         
 
 
     def load_data(self):
         Feeder = import_class(self.arg.feeder)
         self.data_loader = dict()
+        if self.arg.test:
+            self.arg.train_feeder_args['data_path'] = 'data/ntu_test_os/NTU_ALL_OS.npz'
+            self.arg.test_feeder_args['data_path'] = 'data/ntu_test_os/NTU_ALL_OS.npz'
+            self.arg.examplar_feeder_args['data_path'] = 'data/ntu_test_os/NTU_ALL_OS.npz'
+            
         if self.arg.phase == 'train':
             self.data_loader['train'] = torch.utils.data.DataLoader(
                 dataset=Feeder(**self.arg.train_feeder_args),
@@ -292,14 +303,16 @@ class Processor():
                 shuffle=True,
                 num_workers=self.arg.num_worker,
                 drop_last=True,
-                worker_init_fn=init_seed)
+                worker_init_fn=init_seed,
+                collate_fn = partial(collate_fn_padd, device))
         self.data_loader['test'] = torch.utils.data.DataLoader(
             dataset=Feeder(**self.arg.test_feeder_args),
             batch_size=self.arg.test_batch_size,
             shuffle=False,
             num_workers=self.arg.num_worker,
             drop_last=False,
-            worker_init_fn=init_seed)
+            worker_init_fn=init_seed,
+            collate_fn = partial(collate_fn_padd, device))
         self.data_loader['examplar'] = torch.utils.data.DataLoader(
             dataset=Feeder(**self.arg.examplar_feeder_args),
             batch_size=self.arg.test_batch_size,
@@ -307,21 +320,32 @@ class Processor():
             num_workers=self.arg.num_worker,
             drop_last=False,
             worker_init_fn=init_seed)
-        
 
-    def load_model(self):
-        output_device = self.arg.device[0] if type(self.arg.device) is list else self.arg.device
+    def load_model(self):        
+        output_device = "CUDA" if self.arg.device else "CPU"    
+        # output_device = self.arg.device[0] if type(self.arg.device) is list else self.arg.device
         self.output_device = output_device
         Model = import_class(self.arg.model)
         shutil.copy2(inspect.getfile(Model), self.arg.work_dir)
         print(Model)
         self.model = Model(**self.arg.model_args)
         # print(self.model)
-        self.loss_ce = nn.CrossEntropyLoss().cuda(output_device)
-        self.loss = KLLoss().cuda(output_device)
-        self.loss_me = Proxy_Anchor(nb_classes = self.arg.model_args['num_class'], 
-                                    sz_embed = 512, mrg = 0.1, alpha = 32).cuda()
-
+        self.loss_ce = nn.CrossEntropyLoss().cuda()
+        self.loss_ce_img = nn.CrossEntropyLoss().cuda()
+        self.loss_ce_text = nn.CrossEntropyLoss().cuda()
+        self.loss_img = KLLoss().cuda()
+        self.loss_text = KLLoss().cuda()
+        self.loss_kl = KLLoss().cuda()
+        # self.loss_me_s = Proxy_Anchor(nb_classes = self.arg.model_args['num_class'], 
+        #                             sz_embed = 512, mrg = 0.1, alpha = 32).cuda()
+        # self.loss_me_t = Proxy_Anchor(nb_classes = self.arg.model_args['num_class'], 
+        #                             sz_embed = 512, mrg = 0.1, alpha = 32).cuda()
+        # self.proxy = True
+        self.loss_me_s = SupConLoss(temperature=0.1)
+        self.loss_me_t = SupConLoss(temperature=0.1)
+        # self.loss_me_s = MultiSimilarityLoss(alpha=2, beta=50, base=0.5)
+        # self.loss_me_t = MultiSimilarityLoss(alpha=2, beta=50, base=0.5)
+        self.proxy = False
         self.model_text_dict = nn.ModuleDict()
 
         for name in self.arg.model_args['head']:
@@ -331,11 +355,13 @@ class Processor():
             del model_.visual
             if self.arg.te_trainable:
                 model_text = TextCLIP(model_)
+            elif self.arg.mixing:
+                model_text = TextCLIP(model_, additional_layers=True, name=name, mixing=True)
             else:
                 model_text = TextCLIP(model_, additional_layers=True, name=name)
-            model_text = model_text.cuda(self.output_device)
+            model_text = model_text.cuda()
             self.model_text_dict[name] = model_text
-
+        
         if self.arg.weights:
             self.global_step = int(arg.weights[:-3].split('-')[-1])
             self.print_log('Load weights from {}.'.format(self.arg.weights))
@@ -345,7 +371,7 @@ class Processor():
             else:
                 weights = torch.load(self.arg.weights)
 
-            weights = OrderedDict([[k.split('module.')[-1], v.cuda(output_device)] for k, v in weights.items()])
+            weights = OrderedDict([[k.split('module.')[-1], v.cuda()] for k, v in weights.items()])
 
             keys = list(weights.keys())
             for w in self.arg.ignore_weights:
@@ -371,8 +397,11 @@ class Processor():
 
     def load_optimizer(self):
         if self.arg.optimizer == 'SGD':
-            param_group = [{'params': self.model.parameters(),'lr': self.arg.base_lr},
-                        {'params': self.loss_me.parameters(), 'lr': self.arg.base_lr}]
+            param_group = [{'params': self.model.parameters(),'lr': self.arg.base_lr}]
+            if self.proxy:
+                param_group.append({'params': self.loss_me_s.parameters(), 'lr': self.arg.base_lr})
+                param_group.append({'params': self.loss_me_t.parameters(), 'lr': self.arg.base_lr})
+                
             if self.arg.te_trainable:
                 param_group.append({'params': self.model_text_dict.parameters(), 'lr': self.arg.base_lr*self.arg.te_lr_ratio})
             else:
@@ -446,6 +475,7 @@ class Processor():
         self.model.train()
         self.print_log('Training epoch: {}'.format(epoch + 1))
         loader = self.data_loader['train']
+        mixing = self.arg.mixing
         self.adjust_learning_rate(epoch)
 
         loss_value = []
@@ -456,10 +486,12 @@ class Processor():
         process = tqdm(loader, ncols=40)
 
 
-        for batch_idx, (data, label, index) in enumerate(process):            
+        for batch_idx, (data, label, index) in enumerate(process):        
+            breakpoint()    
             self.global_step += 1
             with torch.no_grad():
-                data = data.float().cuda(self.output_device)
+                # data = data.float().cuda(self.output_device)
+                data = data.float().cuda()
             timer['dataloader'] += self.split_time()
             self.optimizer.zero_grad()
 
@@ -468,26 +500,32 @@ class Processor():
                 output, feature_dict, logit_scale, part_feature_list = self.model(data)
 
                 label_g = gen_label(label) # n by n 같은 라벨 표기
-                label = label.long().cuda(self.output_device)
+                label = label.long().cuda()
                 loss_te_list = []
                 for ind in range(num_text_aug):
-                    if ind > 0:
-                        text_id = np.ones(len(label),dtype=np.int8) * ind
+                    if ind > 0: # 0번 외에는 바디 파트 스크립트를 넣어줌
+                        text_id = np.ones(len(label),dtype=np.int8) * ind # 몇번째 바디 파트인지
                         texts = torch.stack([text_dict[j][i,:] for i,j in zip(label,text_id)])
-                        texts = texts.cuda(self.output_device)
+                        texts = texts.cuda()
 
                     else:
-
+                        # 0번은 11개의 동의어 중 랜덤 라벨을 넣어줌
                         texts = list()
                         for i in range(len(label)):
                             text_len = len(text_list[label[i]])
                             text_id = np.random.randint(text_len,size=1)
                             text_item = text_list[label[i]][text_id.item()]
                             texts.append(text_item)
-                    
-                        texts = torch.cat(texts).cuda(self.output_device)
 
-                    text_embedding = self.model_text_dict[self.arg.model_args['head'][0]](texts).float()
+                        texts = torch.cat(texts).cuda()
+                    
+                    if mixing:
+                        text_embedding, mixed_embedding = self.model_text_dict[self.arg.model_args['head'][0]](texts, 
+                                            feature_dict[self.arg.model_args['head'][0]])
+                        text_embedding = text_embedding.float()
+                        mixed_embedding = mixed_embedding.float()
+                    else:
+                        text_embedding = self.model_text_dict[self.arg.model_args['head'][0]](texts).float()
 
                     if ind == 0:
                         # logit: (100 x 512)
@@ -499,13 +537,20 @@ class Processor():
 
                         ground_truth = torch.tensor(label_g,dtype=part_feature_list[ind-1].dtype,device=device)
 
-                    loss_metric = self.loss_me(feature_dict[self.arg.model_args['head'][0]], label)
-                    loss_imgs = self.loss(logits_per_image,ground_truth) # (batch size x batch size) KLLoss -> why?
-                    loss_texts = self.loss(logits_per_text,ground_truth)
-                    # 데이터의 structure 확실한 경우, graph > transformer??
-                    # 데이터 스켈레톤의 
-                    loss_te_list.append((loss_imgs + loss_texts) / 2)
-                    loss_te_list.append(loss_metric)
+                    if mixing:
+                        loss_metric = self.loss_me_s(feature_dict[self.arg.model_args['head'][0]], label)
+                        loss_metric_mix = self.loss_me_t(mixed_embedding, label)
+                        loss_ts = self.loss_kl(feature_dict[self.arg.model_args['head'][0]], mixed_embedding)
+                        loss_te_list.append(loss_metric_mix)
+                        loss_te_list.append(loss_ts)
+                        loss_te_list.append(loss_metric)
+                    else:
+                        loss_metric = self.loss_me(feature_dict[self.arg.model_args['head'][0]], label)
+                        loss_imgs = self.loss_img(logits_per_image,ground_truth) # (batch size x batch size) KLLoss -> why?
+                        loss_texts = self.loss_text(logits_per_text,ground_truth)
+
+                        loss_te_list.append((loss_imgs + loss_texts) / 2)
+                        loss_te_list.append(loss_metric)
 
                 loss_ce = self.loss_ce(output, label)
                 # loss_recons = self.loss_recons(output, label) # 1~2%
@@ -540,15 +585,7 @@ class Processor():
             '\tMean training loss: {:.4f}.  Mean training acc: {:.2f}%.'.format(np.mean(loss_value), np.mean(acc_value)*100))
         self.print_log('\tTime consumption: [Data]{dataloader}, [Network]{model}'.format(**proportion))
 
-
-
-        if save_model:
-            state_dict = self.model.state_dict()
-            weights = OrderedDict([[k.split('module.')[-1], v.cpu()] for k, v in state_dict.items()])
-
-            torch.save(weights, self.arg.model_saved_name + '-' + str(epoch+1) + '-' + str(int(self.global_step)) + '.pt')
-
-    def eval(self, epoch, save_score=False, loader_name=['test'], wrong_file=None, result_file=None):
+    def eval(self, epoch, save_score=False, loader_name=['test'], wrong_file=None, result_file=None, save_model=False):
         if wrong_file is not None:
             f_w = open(wrong_file, 'w')
         if result_file is not None:
@@ -559,6 +596,9 @@ class Processor():
         for ln in loader_name:
             recalls, accuracy, test_embeddings, test_labels = utils.evaluate_one_shot(
                 self.model, self.data_loader['test'], self.data_loader['examplar'])
+            if accuracy > self.best_acc or save_model:
+                self.save_model(epoch)
+            
             if accuracy > self.best_acc:
                 self.best_acc = accuracy
                 self.best_acc_epoch = epoch + 1
@@ -568,6 +608,11 @@ class Processor():
                 # self.val_writer.add_scalar('loss', loss, self.global_step)
                 self.val_writer.add_scalar('acc', accuracy, self.global_step)
 
+    def save_model(self, epoch):
+        state_dict = self.model.state_dict()
+        weights = OrderedDict([[k.split('module.')[-1], v.cpu()] for k, v in state_dict.items()])
+        torch.save(weights, self.arg.model_saved_name + '-' + str(epoch+1) + '-' + str(int(self.global_step)) + '.pt')
+    
     def start(self):
         print("start the processer")
         if self.arg.phase == 'train':
@@ -580,8 +625,8 @@ class Processor():
             for epoch in range(self.arg.start_epoch, self.arg.num_epoch):
                 save_model = (((epoch + 1) % self.arg.save_interval == 0) or (
                         epoch + 1 == self.arg.num_epoch)) and (epoch+1) > self.arg.save_epoch
-                self.train(epoch, save_model=save_model)
-                self.eval(epoch, save_score=self.arg.save_score, loader_name=['test'])
+                self.train(epoch)
+                self.eval(epoch, save_score=self.arg.save_score, loader_name=['test'], save_model=save_model)
                 
             # test the best model
             weights_path = glob.glob(os.path.join(self.arg.work_dir, 'runs-'+str(self.best_acc_epoch)+'*'))[0]
@@ -589,7 +634,7 @@ class Processor():
             weights = torch.load(weights_path)
             if type(self.arg.device) is list:
                 if len(self.arg.device) > 1:
-                    weights = OrderedDict([['module.'+k, v.cuda(self.output_device)] for k, v in weights.items()])
+                    weights = OrderedDict([['module.'+k, v.cuda()] for k, v in weights.items()])
             self.model.load_state_dict(weights)
 
             wf = weights_path.replace('.pt', '_wrong.txt')
@@ -633,13 +678,14 @@ if __name__ == '__main__':
             default_arg = yaml.safe_load(f)
         key = vars(p).keys()
         for k in default_arg.keys():
-            if k not in key:
-                breakpoint()   
+            if k not in key:   
                 print('WRONG ARG: {}'.format(k))
                 assert (k in key), f"{k} not in key"
         parser.set_defaults(**default_arg)
 
     arg = parser.parse_args()
+    #device = [str(device_id) for device_id in arg.device]
+    #os.environ["CUDA_VISIBLE_DEVICES"]= ", ".join(device)
     init_seed(arg.seed)
     processor = Processor(arg)
     processor.start()
