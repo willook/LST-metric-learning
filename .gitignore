@@ -1,3 +1,10 @@
+# data
+data
+data_raw
+
+#libraries
+torchpack
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -130,11 +137,16 @@ dmypy.json
 
 # Data and models
 work_dir/
-data/
-data
+denoised_data
+raw_data
+*.npz
+*.h5
+*.pkl 
+nturgbd_raw
 
 # clip
 clip/__pycache__/
 
 ## script
 train.sh
+run.sh
