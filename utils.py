@@ -7,10 +7,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
+from sklearn.metrics import accuracy_score
 from torch.utils.data.sampler import Sampler
 from typing import Sized
 from tqdm import tqdm
 from torch import linalg as LA
+from pytorch_metric_learning.utils.inference import CustomKNN
+from pytorch_metric_learning.distances import CosineSimilarity
 
 def import_class(name):
     components = name.split('.')
@@ -213,6 +216,99 @@ def get_vector_property(x):
     pdist = torch.triu(pdist, diagonal=1).sum() * 2 / (N*(N-1))
     return cos_sim, pdist
 
+def l2_norm(input):
+    input_size = input.size()
+    buffer = torch.pow(input, 2)
+    normp = torch.sum(buffer, 1).add_(1e-12)
+    norm = torch.sqrt(normp)
+    _output = torch.div(input, norm.view(-1, 1).expand_as(input))
+    output = _output.view(input_size)
+
+    return output
+
+def calc_recall_at_k(T, Y, k):
+    """
+    T : [nb_samples] (target labels)
+    Y : [nb_samples x k] (k predicted labels/neighbours)
+    """
+
+    s = 0
+    for t,y in zip(T,Y):
+        if t in torch.Tensor(y).long()[:k]:
+            s += 1
+    return s / (1. * len(T))
+
+def _evaluate_cos(X, T):
+    # calculate embeddings with model and get targets
+    X = l2_norm(X) # 이거 해도 되나?
+
+    # get predictions by assigning nearest 32 neighbors with cosine
+    K = 32
+    Y = []
+    xs = []
+    
+    cos_sim = F.linear(X, X) # (num of samples) x (num of samples)
+    Y = T[cos_sim.topk(1 + K)[1][:,1:]] # select highest similarity sample except itself 
+    Y = Y.float().cpu()
+    
+    recalls = []
+    for k in [1, 2, 4, 8, 16, 32]:
+        r_at_k = calc_recall_at_k(T, Y, k)
+        recalls.append(r_at_k)
+        print("R@{} : {:.3f}".format(k, 100 * r_at_k))
+
+    return recalls
+
+def predict_batchwise(model, dataloader):
+    """
+    :return: list of embeddings and labels
+        embeddings: tensor of (num of samples) x (embedding)
+        labels: tensor of (num of samples)
+    """
+    device = "cuda"
+    model_is_training = model.training
+    model.eval()
+    
+    ds = dataloader.dataset
+    A = [[] for i in range(2)] # A[0]: all embeddings, A[1]: all labels
+    with torch.no_grad():
+        # extract batches (A becomes list of samples)
+        for data, labels, _ in tqdm(dataloader):
+            b, _, _, _, _ = data.size()
+            data = data.float().cuda("cuda")
+            labels = labels.long().view((-1, 1))
+            outputs, _, _, _ = model.encode(data)
+            for output, label in zip(outputs, labels):
+                A[0].append(output)
+                A[1].append(label)
+    model.train()
+    model.train(model_is_training) # revert to previous training state
+    
+    return [torch.stack(A[i]) for i in range(len(A))] 
+
+def evaluate_one_shot(model, dl_ev, dl_ex, return_raw=False):
+    query_embeddings, query_labels = predict_batchwise(model, dl_ev) 
+    reference_embeddings, reference_labels = predict_batchwise(model, dl_ex)
+    embeddings = torch.cat([query_embeddings, reference_embeddings], axis=0)
+    labels = torch.cat([query_labels, reference_labels], axis=0)
+    recalls = _evaluate_cos(embeddings, labels) # TODO query랑 reference랑 스택
+    query_embeddings = l2_norm(query_embeddings) # 이거 해도 되나?
+    reference_embeddings = l2_norm(reference_embeddings)
+    # https://kevinmusgrave.github.io/pytorch-metric-learning/accuracy_calculation/
+    knn_func = CustomKNN(CosineSimilarity())
+    knn_distances, knn_indices = knn_func(query_embeddings, 1, reference_embeddings, False)
+    #knn_indices, knn_distances = utils.stat_utils.get_knn(reference_embeddings, query_embeddings, 1, False)
+    knn_labels = reference_labels[knn_indices][:,0]
+    accuracy = accuracy_score(knn_labels.to('cpu'), query_labels.to('cpu'))
+    # accuracy = confusion_matrix(knn_labels.to('cpu'), query_labels.to('cpu'))
+    print("accuracy:", accuracy)
+    # with open(self.embedding_filename+"_last", 'wb') as f:
+    #     print("Dumping embeddings for new max_acc to file", self.embedding_filename+"_last")
+    #     pickle.dump([query_embeddings, query_labels, reference_embeddings, reference_labels, accuracy], f)
+    # accuracies["accuracy"] = accuracy
+    # keyname = self.accuracies_keyname("mean_average_precision_at_r") # accuracy as keyname not working
+    # accuracies[keyname] = accuracy
+    return recalls, accuracy, embeddings, labels
 
 class BalancedSampler(Sampler[int]):
 
