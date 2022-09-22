@@ -55,8 +55,12 @@ class Feeder(Dataset):
             self.data = npz_data['x_test']
             self.label = np.where(npz_data['y_test'] > 0)[1]
             self.sample_name = ['test_' + str(i) for i in range(len(self.data))]
+        elif self.split == 'examplar':
+            self.data = npz_data['x_examplar']
+            self.label = np.where(npz_data['y_examplar'] > 0)[1]
+            self.sample_name = ['examplar_' + str(i) for i in range(len(self.data))]
         else:
-            raise NotImplementedError('data split only supports train/test')
+            raise NotImplementedError(f'data split only supports train/test/examplar, but {self.split}')
         N, T, _ = self.data.shape
         self.data = self.data.reshape((N, T, 2, 25, 3)).transpose(0, 4, 1, 3, 2)
 
