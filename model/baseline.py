@@ -203,9 +203,41 @@ class Model(nn.Module):
 
 
 class TextCLIP(nn.Module):
-    def __init__(self, model) :
+    def __init__(self, model, additional_layers = False, name = None, mixing=False):
         super(TextCLIP, self).__init__()
         self.model = model.float()
-
-    def forward(self,text):
-        return self.model.encode_text(text)
+        self.additional_layers = additional_layers
+        self.mixing = mixing
+        if additional_layers:
+            if name=='ViT-B/32':
+                self.linear_layer = nn.Sequential(
+                    nn.Linear(512, 512),
+                    nn.Linear(512, 512),
+                )
+            else:
+                raise NotImplementedError
+            if name=='ViT-B/32' and mixing:
+                self.mixing_encoder = nn.Sequential(
+                    nn.Linear(1024, 724),
+                    nn.Linear(724, 512),
+                )
+                self.mixing_encoder = nn.Sequential(
+                    nn.Linear(512, 512),
+                    nn.Linear(512, 512),
+                )
+            for param in model.parameters(): # top layer를 추가할 경우 clip은 학습하지 않음
+                param.requires_grad = False
+                
+    def forward(self, text, img_embeding=None):
+        if self.additional_layers:
+            text_embedding = self.model.encode_text(text)
+            out = self.linear_layer(text_embedding)
+            if self.mixing:
+                # embedding = torch.concat((text_embedding, img_embeding), dim=-1)
+                # mixing = self.mixing_encoder(embedding)
+                # out = (out, mixing)
+                mixing = self.mixing_encoder(img_embeding) + out
+                out = (out, mixing)
+        else:
+            out = self.model.encode_text(text)    
+        return out

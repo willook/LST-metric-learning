@@ -430,8 +430,8 @@ class Model_lst_4part(nn.Module):
         if k == 0:
             return torch.from_numpy(I)
         return  torch.from_numpy(I - np.linalg.matrix_power(A_outward, k))
-
-    def forward(self, x):
+    
+    def encode(self, x):
         if len(x.shape) == 3:
             N, T, VC = x.shape
             x = x.view(N, T, self.num_point, -1).permute(0, 3, 1, 2).contiguous().unsqueeze(-1)
@@ -477,6 +477,11 @@ class Model_lst_4part(nn.Module):
             feature_dict[name] = self.linear_head[name](x) # linear projection
         
         x = self.drop_out(x) # nothing
+        # self.fc: classfier
+        return x, feature_dict, self.logit_scale, [head_feature, hand_feature, hip_feature, foot_feature]
+       
+    def forward(self, x):
+        x, feature_dict, self.logit_scale, [head_feature, hand_feature, hip_feature, foot_feature] = self.encode(x)
         # self.fc: classfier
         return self.fc(x), feature_dict, self.logit_scale, [head_feature, hand_feature, hip_feature, foot_feature]
 
@@ -593,7 +598,6 @@ class Model_lst_4part_bone(nn.Module):
         hand_feature = self.part_list[1](feature[:,:,:,:,hand_list].mean(4).mean(3).mean(1))
         foot_feature = self.part_list[2](feature[:,:,:,:,foot_list].mean(4).mean(3).mean(1))
         hip_feature = self.part_list[3](feature[:,:,:,:,hip_list].mean(4).mean(3).mean(1))
-
 
         x = x.view(N, M, c_new, -1)
         x = x.mean(3).mean(1)
