@@ -43,9 +43,7 @@ num_text_aug = 1
 text_list = text_prompt_openai_random() # 120, 11, 1, 77
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
-
 scaler = torch.cuda.amp.GradScaler()
-
 import resource
 rlimit = resource.getrlimit(resource.RLIMIT_NOFILE)
 resource.setrlimit(resource.RLIMIT_NOFILE, (2048, rlimit[1]))
@@ -142,7 +140,7 @@ def get_parser():
     parser.add_argument(
         '--num-worker',
         type=int,
-        default=32,
+        default=0,
         help='the number of worker for data loader')
     parser.add_argument(
         '--train-feeder-args',
@@ -268,7 +266,7 @@ class Processor():
         self.best_acc = 0
         self.best_acc_epoch = 0
 
-        self.model = self.model.cuda()
+        self.model = self.model.to(device)
         # self.model = self.model.cuda(self.output_device)
 
         # if type(self.arg.device) is list:
@@ -285,8 +283,6 @@ class Processor():
         #                 self.model_text_dict[name],
         #                 device_ids=self.arg.device,
         #                 output_device=self.output_device)
-        
-
 
     def load_data(self):
         Feeder = import_class(self.arg.feeder)
@@ -295,6 +291,9 @@ class Processor():
             self.arg.train_feeder_args['data_path'] = 'data/ntu_test_os/NTU_ALL_OS.npz'
             self.arg.test_feeder_args['data_path'] = 'data/ntu_test_os/NTU_ALL_OS.npz'
             self.arg.examplar_feeder_args['data_path'] = 'data/ntu_test_os/NTU_ALL_OS.npz'
+            # self.arg.train_feeder_args['data_path'] = 'data_raw/ntu_all_os/NTU_ALL_OS.npz'
+            # self.arg.test_feeder_args['data_path'] = 'data_raw/ntu_all_os/NTU_ALL_OS.npz'
+            # self.arg.examplar_feeder_args['data_path'] = 'data_raw/ntu_all_os/NTU_ALL_OS.npz'
             
         if self.arg.phase == 'train':
             self.data_loader['train'] = torch.utils.data.DataLoader(
@@ -322,20 +321,20 @@ class Processor():
             worker_init_fn=init_seed)
 
     def load_model(self):        
-        output_device = "CUDA" if self.arg.device else "CPU"    
         # output_device = self.arg.device[0] if type(self.arg.device) is list else self.arg.device
-        self.output_device = output_device
         Model = import_class(self.arg.model)
         shutil.copy2(inspect.getfile(Model), self.arg.work_dir)
         print(Model)
         self.model = Model(**self.arg.model_args)
         # print(self.model)
-        self.loss_ce = nn.CrossEntropyLoss().cuda()
-        self.loss_ce_img = nn.CrossEntropyLoss().cuda()
-        self.loss_ce_text = nn.CrossEntropyLoss().cuda()
-        self.loss_img = KLLoss().cuda()
-        self.loss_text = KLLoss().cuda()
-        self.loss_kl = KLLoss().cuda()
+        self.loss_ce = nn.CrossEntropyLoss().to(device)
+        self.loss_ce_img = nn.CrossEntropyLoss().to(device)
+        self.loss_ce_text = nn.CrossEntropyLoss().to(device)
+        self.loss_img = KLLoss().to(device)
+        self.loss_text = KLLoss().to(device)
+        self.loss_kl = KLLoss().to(device)
+        self.loss_recons = torch.nn.MSELoss()
+        
         # self.loss_me_s = Proxy_Anchor(nb_classes = self.arg.model_args['num_class'], 
         #                             sz_embed = 512, mrg = 0.1, alpha = 32).cuda()
         # self.loss_me_t = Proxy_Anchor(nb_classes = self.arg.model_args['num_class'], 
@@ -359,7 +358,7 @@ class Processor():
                 model_text = TextCLIP(model_, additional_layers=True, name=name, mixing=True)
             else:
                 model_text = TextCLIP(model_, additional_layers=True, name=name)
-            model_text = model_text.cuda()
+            model_text = model_text.to(device)
             self.model_text_dict[name] = model_text
         
         if self.arg.weights:
@@ -371,7 +370,7 @@ class Processor():
             else:
                 weights = torch.load(self.arg.weights)
 
-            weights = OrderedDict([[k.split('module.')[-1], v.cuda()] for k, v in weights.items()])
+            weights = OrderedDict([[k.split('module.')[-1], v.to(device)] for k, v in weights.items()])
 
             keys = list(weights.keys())
             for w in self.arg.ignore_weights:
@@ -486,12 +485,11 @@ class Processor():
         process = tqdm(loader, ncols=40)
 
 
-        for batch_idx, (data, label, index) in enumerate(process):        
-            breakpoint()    
+        for batch_idx, (data, label, index) in enumerate(process):   
             self.global_step += 1
             with torch.no_grad():
                 # data = data.float().cuda(self.output_device)
-                data = data.float().cuda()
+                data = data.float().to(device)
             timer['dataloader'] += self.split_time()
             self.optimizer.zero_grad()
 
@@ -500,13 +498,13 @@ class Processor():
                 output, feature_dict, logit_scale, part_feature_list = self.model(data)
 
                 label_g = gen_label(label) # n by n 같은 라벨 표기
-                label = label.long().cuda()
+                label = label.long().to(device)
                 loss_te_list = []
                 for ind in range(num_text_aug):
                     if ind > 0: # 0번 외에는 바디 파트 스크립트를 넣어줌
                         text_id = np.ones(len(label),dtype=np.int8) * ind # 몇번째 바디 파트인지
                         texts = torch.stack([text_dict[j][i,:] for i,j in zip(label,text_id)])
-                        texts = texts.cuda()
+                        texts = texts.to(device)
 
                     else:
                         # 0번은 11개의 동의어 중 랜덤 라벨을 넣어줌
@@ -517,7 +515,7 @@ class Processor():
                             text_item = text_list[label[i]][text_id.item()]
                             texts.append(text_item)
 
-                        texts = torch.cat(texts).cuda()
+                        texts = torch.cat(texts).to(device)
                     
                     if mixing:
                         text_embedding, mixed_embedding = self.model_text_dict[self.arg.model_args['head'][0]](texts, 
@@ -634,7 +632,7 @@ class Processor():
             weights = torch.load(weights_path)
             if type(self.arg.device) is list:
                 if len(self.arg.device) > 1:
-                    weights = OrderedDict([['module.'+k, v.cuda()] for k, v in weights.items()])
+                    weights = OrderedDict([['module.'+k, v.to(device)] for k, v in weights.items()])
             self.model.load_state_dict(weights)
 
             wf = weights_path.replace('.pt', '_wrong.txt')
