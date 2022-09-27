@@ -62,7 +62,7 @@ class Feeder(Dataset):
         else:
             raise NotImplementedError(f'data split only supports train/test/examplar, but {self.split}')
         N, T, _ = self.data.shape
-        self.data = self.data.reshape((N, T, 2, 25, 3)).transpose(0, 4, 1, 3, 2)
+        self.data = self.data.reshape((N, T, 2, 25, 3)).transpose(0, 4, 1, 3, 2) # (4750, 3, 300, 25, 2)
 
     def get_mean_map(self):
         data = self.data
@@ -77,7 +77,7 @@ class Feeder(Dataset):
         return self
 
     def __getitem__(self, index):
-        data_numpy = self.data[index]
+        data_numpy = self.data[index] # (3, 300, 25, 2)
         label = self.label[index]
         data_numpy = np.array(data_numpy)
         valid_frame_num = np.sum(data_numpy.sum(0).sum(-1).sum(-1) != 0)

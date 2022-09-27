@@ -214,7 +214,8 @@ def get_parser():
     parser.add_argument('--warm_up_epoch', type=int, default=0)
     parser.add_argument('--loss-alpha', type=float, default=0.8)
     parser.add_argument('--te-lr-ratio', type=float, default=1)
-
+    parser.add_argument('--test', action='store_true', default=False)
+    
 
 
 
@@ -289,6 +290,10 @@ class Processor():
     def load_data(self):
         Feeder = import_class(self.arg.feeder)
         self.data_loader = dict()
+        if self.arg.test:
+            self.arg.train_feeder_args['data_path'] = 'data/ntu_test_os/NTU_ALL_OS.npz'
+            self.arg.test_feeder_args['data_path'] = 'data/ntu_test_os/NTU_ALL_OS.npz'
+            
         if self.arg.phase == 'train':
             self.data_loader['train'] = torch.utils.data.DataLoader(
                 dataset=Feeder(**self.arg.train_feeder_args),
@@ -554,6 +559,7 @@ class Processor():
                 label_list.append(label)
                 with torch.no_grad():
                     # print(data.size())
+                    breakpoint()
                     b, _, _, _, _ = data.size()
                     data = data.float().cuda(self.output_device)
                     label = label.long().cuda(self.output_device)

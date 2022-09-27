@@ -17,6 +17,9 @@ import csv
 import numpy as np
 import glob
 from functools import partial
+import datetime
+from pathlib import Path
+import matplotlib.pyplot as plt
 
 # torch
 import torch
@@ -31,8 +34,7 @@ import utils
 from torchlight import DictAction
 from tools import *
 from Text_Prompt import *
-from losses import KLLoss, Proxy_Anchor
-from model.utils import collate_fn_padd
+from losses import KLLoss, KLLoss2, Proxy_Anchor
 from pytorch_metric_learning.losses import SupConLoss, MultiSimilarityLoss
 
 import warnings
@@ -80,9 +82,9 @@ def get_parser():
     parser = argparse.ArgumentParser(
         description='Spatial Temporal Graph Convolution Network')
     parser.add_argument(
-        '--work-dir',
-        default='./work_dir/temp',
-        help='the work folder for storing results')
+        '--remark',
+        default=None,
+        help='Prefix for logdir name')
 
     parser.add_argument('-model_saved_name', default='')
     parser.add_argument(
@@ -222,8 +224,9 @@ def get_parser():
     parser.add_argument('--loss-alpha', type=float, default=0.8)
     parser.add_argument('--te-lr-ratio', type=float, default=1)
     parser.add_argument('--te-trainable', action='store_true', default=False)
-    parser.add_argument('--mixing', action='store_true', default=False)
+    parser.add_argument('--method', type=str, default='mixing')
     parser.add_argument('--test', action='store_true', default=False)
+    parser.add_argument('--loss', type=str, default="supcon")
     return parser
 
 
@@ -234,19 +237,20 @@ class Processor():
 
     def __init__(self, arg):
         self.arg = arg
+        self.edit_arg()
         self.save_arg()
         if arg.phase == 'train':
             if not arg.train_feeder_args['debug']:
                 arg.model_saved_name = os.path.join(arg.work_dir, 'runs')
                 if os.path.isdir(arg.model_saved_name):
                     print('log_dir: ', arg.model_saved_name, 'already exist')
-                    answer = input('delete it? y/n:')
-                    if answer == 'y':
-                        shutil.rmtree(arg.model_saved_name)
-                        print('Dir removed: ', arg.model_saved_name)
-                        input('Refresh the website of tensorboard by pressing any keys')
-                    else:
-                        print('Dir not removed: ', arg.model_saved_name)
+                    # answer = input('delete it? y/n:')
+                    # if answer == 'y':
+                    shutil.rmtree(arg.model_saved_name)
+                    print('Dir removed: ', arg.model_saved_name)
+                    # input('Refresh the website of tensorboard by pressing any keys')
+                    # else:
+                    #     print('Dir not removed: ', arg.model_saved_name)
                 self.train_writer = SummaryWriter(os.path.join(arg.model_saved_name, 'train'), 'train')
                 self.val_writer = SummaryWriter(os.path.join(arg.model_saved_name, 'val'), 'val')
             else:
@@ -284,13 +288,37 @@ class Processor():
         #                 device_ids=self.arg.device,
         #                 output_device=self.output_device)
 
+    def edit_arg(self):
+        date = datetime.date.today().isoformat()
+        model = "_".join(self.arg.model.split("."))
+        method = self.arg.method
+        #model = self.arg.model if self.arg.model is not None else "CTRGCN" 
+        remark = self.arg.remark if self.arg.remark is not None else "" 
+        if remark == "":
+            self.arg.work_dir = Path("./work_dir/{}/{}_{}_{}".format(
+                date, model, method, self.arg.loss))
+        else:
+            self.arg.work_dir = Path("./work_dir/{}/{}_{}_{}_{}".format(
+                date, model, method, self.arg.loss, remark))
+        if self.arg.test:
+            self.arg.work_dir = Path("./work_dir/{}/test".format(date))
+        
+        # if self.arg.method == "mixing":
+        #     self.arg.te_trainable = True
+        # elif self.arg.method == "multimodal":
+        #     self.arg.te_trainable = True
+        # elif self.arg.method == "naive":
+        #     self.arg.te_trainable = True
+        # else:
+        #     raise NotImplementedError
+            
     def load_data(self):
         Feeder = import_class(self.arg.feeder)
         self.data_loader = dict()
         if self.arg.test:
-            self.arg.train_feeder_args['data_path'] = 'data/ntu_test_os/NTU_ALL_OS.npz'
-            self.arg.test_feeder_args['data_path'] = 'data/ntu_test_os/NTU_ALL_OS.npz'
-            self.arg.examplar_feeder_args['data_path'] = 'data/ntu_test_os/NTU_ALL_OS.npz'
+            self.arg.train_feeder_args['data_path'] = 'data/ntu_test_os/NTU_ALL_OS_002.npz'
+            self.arg.test_feeder_args['data_path'] = 'data/ntu_test_os/NTU_ALL_OS_002.npz'
+            self.arg.examplar_feeder_args['data_path'] = 'data/ntu_test_os/NTU_ALL_OS_002.npz'
             # self.arg.train_feeder_args['data_path'] = 'data_raw/ntu_all_os/NTU_ALL_OS.npz'
             # self.arg.test_feeder_args['data_path'] = 'data_raw/ntu_all_os/NTU_ALL_OS.npz'
             # self.arg.examplar_feeder_args['data_path'] = 'data_raw/ntu_all_os/NTU_ALL_OS.npz'
@@ -302,16 +330,14 @@ class Processor():
                 shuffle=True,
                 num_workers=self.arg.num_worker,
                 drop_last=True,
-                worker_init_fn=init_seed,
-                collate_fn = partial(collate_fn_padd, device))
+                worker_init_fn=init_seed)
         self.data_loader['test'] = torch.utils.data.DataLoader(
             dataset=Feeder(**self.arg.test_feeder_args),
             batch_size=self.arg.test_batch_size,
             shuffle=False,
             num_workers=self.arg.num_worker,
             drop_last=False,
-            worker_init_fn=init_seed,
-            collate_fn = partial(collate_fn_padd, device))
+            worker_init_fn=init_seed)
         self.data_loader['examplar'] = torch.utils.data.DataLoader(
             dataset=Feeder(**self.arg.examplar_feeder_args),
             batch_size=self.arg.test_batch_size,
@@ -330,21 +356,28 @@ class Processor():
         self.loss_ce = nn.CrossEntropyLoss().to(device)
         self.loss_ce_img = nn.CrossEntropyLoss().to(device)
         self.loss_ce_text = nn.CrossEntropyLoss().to(device)
-        self.loss_img = KLLoss().to(device)
-        self.loss_text = KLLoss().to(device)
-        self.loss_kl = KLLoss().to(device)
+        self.loss_img = KLLoss().to(device) # multimodal image
+        self.loss_text = KLLoss().to(device) # multimodal text
+        self.loss_kl = KLLoss2().to(device)
+        # TODO: 아래 로스로 바꾸기
+        # self.loss_kl = torch.nn.KLDivLoss() # for mixing teacher - student
         self.loss_recons = torch.nn.MSELoss()
         
-        # self.loss_me_s = Proxy_Anchor(nb_classes = self.arg.model_args['num_class'], 
-        #                             sz_embed = 512, mrg = 0.1, alpha = 32).cuda()
-        # self.loss_me_t = Proxy_Anchor(nb_classes = self.arg.model_args['num_class'], 
-        #                             sz_embed = 512, mrg = 0.1, alpha = 32).cuda()
-        # self.proxy = True
-        self.loss_me_s = SupConLoss(temperature=0.1)
-        self.loss_me_t = SupConLoss(temperature=0.1)
-        # self.loss_me_s = MultiSimilarityLoss(alpha=2, beta=50, base=0.5)
-        # self.loss_me_t = MultiSimilarityLoss(alpha=2, beta=50, base=0.5)
         self.proxy = False
+        if self.arg.loss == "proxy_anchor":
+            self.loss_me_s = Proxy_Anchor(nb_classes = self.arg.model_args['num_class'], 
+                                        sz_embed = 512, mrg = 0.1, alpha = 32).cuda()
+            self.loss_me_t = Proxy_Anchor(nb_classes = self.arg.model_args['num_class'], 
+                                        sz_embed = 512, mrg = 0.1, alpha = 32).cuda()
+            self.proxy = True
+        elif self.arg.loss == "supcon":
+            self.loss_me_s = SupConLoss(temperature=0.1)
+            self.loss_me_t = SupConLoss(temperature=0.1)
+        elif self.arg.loss == "ms":
+            self.loss_me_s = MultiSimilarityLoss(alpha=2, beta=50, base=0.5)
+            self.loss_me_t = MultiSimilarityLoss(alpha=2, beta=50, base=0.5)
+        else:
+            raise NotImplementedError
         self.model_text_dict = nn.ModuleDict()
 
         for name in self.arg.model_args['head']:
@@ -352,9 +385,9 @@ class Processor():
             model_, preprocess = clip.load(name, device)
             # model_, preprocess = clip.load('ViT-L/14', device)
             del model_.visual
-            if self.arg.te_trainable:
+            if self.arg.method == "multimodal":
                 model_text = TextCLIP(model_)
-            elif self.arg.mixing:
+            elif self.arg.method == "mixing":
                 model_text = TextCLIP(model_, additional_layers=True, name=name, mixing=True)
             else:
                 model_text = TextCLIP(model_, additional_layers=True, name=name)
@@ -474,7 +507,7 @@ class Processor():
         self.model.train()
         self.print_log('Training epoch: {}'.format(epoch + 1))
         loader = self.data_loader['train']
-        mixing = self.arg.mixing
+        
         self.adjust_learning_rate(epoch)
 
         loss_value = []
@@ -496,7 +529,7 @@ class Processor():
             # forward
             with torch.cuda.amp.autocast():
                 output, feature_dict, logit_scale, part_feature_list = self.model(data)
-
+                breakpoint()
                 label_g = gen_label(label) # n by n 같은 라벨 표기
                 label = label.long().to(device)
                 loss_te_list = []
@@ -517,7 +550,7 @@ class Processor():
 
                         texts = torch.cat(texts).to(device)
                     
-                    if mixing:
+                    if self.arg.method == "mixing":
                         text_embedding, mixed_embedding = self.model_text_dict[self.arg.model_args['head'][0]](texts, 
                                             feature_dict[self.arg.model_args['head'][0]])
                         text_embedding = text_embedding.float()
@@ -535,26 +568,33 @@ class Processor():
 
                         ground_truth = torch.tensor(label_g,dtype=part_feature_list[ind-1].dtype,device=device)
 
-                    if mixing:
+                    if self.arg.method == "mixing":
                         loss_metric = self.loss_me_s(feature_dict[self.arg.model_args['head'][0]], label)
                         loss_metric_mix = self.loss_me_t(mixed_embedding, label)
                         loss_ts = self.loss_kl(feature_dict[self.arg.model_args['head'][0]], mixed_embedding)
-                        loss_te_list.append(loss_metric_mix)
                         loss_te_list.append(loss_ts)
                         loss_te_list.append(loss_metric)
-                    else:
-                        loss_metric = self.loss_me(feature_dict[self.arg.model_args['head'][0]], label)
+                        loss_te_list.append(loss_metric_mix)
+                    elif self.arg.method == "multimodal":
+                        loss_metric_img = self.loss_me_s(feature_dict[self.arg.model_args['head'][0]], label)
+                        #loss_metric_txt = self.loss_me_t(text_embedding, label)
                         loss_imgs = self.loss_img(logits_per_image,ground_truth) # (batch size x batch size) KLLoss -> why?
                         loss_texts = self.loss_text(logits_per_text,ground_truth)
-
                         loss_te_list.append((loss_imgs + loss_texts) / 2)
+                        loss_te_list.append(loss_metric_img)
+                        #loss_te_list.append(loss_metric_txt)
+                    elif self.arg.method == "naive":
+                        loss_metric = self.loss_me_s(feature_dict[self.arg.model_args['head'][0]], label)
                         loss_te_list.append(loss_metric)
+                    else:
+                        raise NotImplementedError
 
                 loss_ce = self.loss_ce(output, label)
                 # loss_recons = self.loss_recons(output, label) # 1~2%
                 
                 loss = loss_ce + self.arg.loss_alpha * sum(loss_te_list) / len(loss_te_list)
-                
+            
+            self.losses_list.append(loss.data.cpu())
             scaler.scale(loss).backward()
 
             scaler.step(self.optimizer)
@@ -592,20 +632,39 @@ class Processor():
         self.print_log('Eval epoch: {}'.format(epoch + 1))
         
         for ln in loader_name:
-            recalls, accuracy, test_embeddings, test_labels = utils.evaluate_one_shot(
+            recalls, accuracy, test_embeddings, test_labels, acc_per_class = utils.evaluate_one_shot(
                 self.model, self.data_loader['test'], self.data_loader['examplar'])
+            self.acc_per_class = acc_per_class
+            self.accuracy_list.append(accuracy)
             if accuracy > self.best_acc or save_model:
                 self.save_model(epoch)
             
             if accuracy > self.best_acc:
                 self.best_acc = accuracy
                 self.best_acc_epoch = epoch + 1
+                acc_per_class_str = " ".join([f"{acc:.4f}" for acc in acc_per_class])
+                self.print_log(f'\tVar per Class: {np.var(acc_per_class)}')
+                self.print_log(f'\tACC per Class: {acc_per_class_str}')
+                
+                #print(f'\tAcc per Class: {acc_per_class_str}')
+            
+            #print('Accuracy: ', accuracy, ' model: ', self.arg.model_saved_name)
+            #print('best_acc: ', self.best_acc, ' epoch: ', self.best_acc_epoch)
+            self.print_log(f'\tAccuracy: {accuracy},  model: {self.arg.model_saved_name}')
+            self.print_log(f'\tBest Acc: {self.best_acc} epoch: {self.best_acc_epoch}')
 
-            print('Accuracy: ', accuracy, ' model: ', self.arg.model_saved_name)
             if self.arg.phase == 'train':
                 # self.val_writer.add_scalar('loss', loss, self.global_step)
                 self.val_writer.add_scalar('acc', accuracy, self.global_step)
 
+    def save_plot(self):
+        plt.plot(self.accuracy_list)
+        plt.savefig(f"{self.arg.work_dir}/accurcy_plot.png")
+        plt.clf()
+        plt.plot(self.losses_list)
+        plt.savefig(f"{self.arg.work_dir}/loss_plot.png")
+        plt.clf()
+        
     def save_model(self, epoch):
         state_dict = self.model.state_dict()
         weights = OrderedDict([[k.split('module.')[-1], v.cpu()] for k, v in state_dict.items()])
@@ -613,6 +672,8 @@ class Processor():
     
     def start(self):
         print("start the processer")
+        self.accuracy_list = []
+        self.losses_list = []
         if self.arg.phase == 'train':
             self.print_log('Parameters:\n{}\n'.format(str(vars(self.arg))))
             self.global_step = self.arg.start_epoch * len(self.data_loader['train']) / self.arg.batch_size
@@ -625,7 +686,7 @@ class Processor():
                         epoch + 1 == self.arg.num_epoch)) and (epoch+1) > self.arg.save_epoch
                 self.train(epoch)
                 self.eval(epoch, save_score=self.arg.save_score, loader_name=['test'], save_model=save_model)
-                
+                self.save_plot()
             # test the best model
             weights_path = glob.glob(os.path.join(self.arg.work_dir, 'runs-'+str(self.best_acc_epoch)+'*'))[0]
             #weights_path = glob.glob(os.path.join(self.arg.work_dir, 'runs'))[0]
@@ -684,6 +745,7 @@ if __name__ == '__main__':
     arg = parser.parse_args()
     #device = [str(device_id) for device_id in arg.device]
     #os.environ["CUDA_VISIBLE_DEVICES"]= ", ".join(device)
+    #os.environ["CUDA_VISIBLE_DEVICES"]= str(arg.device)
     init_seed(arg.seed)
     processor = Processor(arg)
     processor.start()

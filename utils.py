@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, confusion_matrix
 from torch.utils.data.sampler import Sampler
 from typing import Sized
 from tqdm import tqdm
@@ -286,7 +286,7 @@ def predict_batchwise(model, dataloader):
     
     return [torch.stack(A[i]) for i in range(len(A))] 
 
-def evaluate_one_shot(model, dl_ev, dl_ex, return_raw=False):
+def evaluate_one_shot(model, dl_ev, dl_ex):
     query_embeddings, query_labels = predict_batchwise(model, dl_ev) 
     reference_embeddings, reference_labels = predict_batchwise(model, dl_ex)
     embeddings = torch.cat([query_embeddings, reference_embeddings], axis=0)
@@ -299,16 +299,11 @@ def evaluate_one_shot(model, dl_ev, dl_ex, return_raw=False):
     knn_distances, knn_indices = knn_func(query_embeddings, 1, reference_embeddings, False)
     #knn_indices, knn_distances = utils.stat_utils.get_knn(reference_embeddings, query_embeddings, 1, False)
     knn_labels = reference_labels[knn_indices][:,0]
-    accuracy = accuracy_score(knn_labels.to('cpu'), query_labels.to('cpu'))
-    # accuracy = confusion_matrix(knn_labels.to('cpu'), query_labels.to('cpu'))
-    print("accuracy:", accuracy)
-    # with open(self.embedding_filename+"_last", 'wb') as f:
-    #     print("Dumping embeddings for new max_acc to file", self.embedding_filename+"_last")
-    #     pickle.dump([query_embeddings, query_labels, reference_embeddings, reference_labels, accuracy], f)
-    # accuracies["accuracy"] = accuracy
-    # keyname = self.accuracies_keyname("mean_average_precision_at_r") # accuracy as keyname not working
-    # accuracies[keyname] = accuracy
-    return recalls, accuracy, embeddings, labels
+    knn_labels_cpu, query_labels_cpu = knn_labels.to('cpu'), query_labels.to('cpu')
+    accuracy = accuracy_score(knn_labels_cpu, query_labels_cpu)
+    matrix = confusion_matrix(knn_labels_cpu, query_labels_cpu)
+    acc_per_class = matrix.diagonal()/matrix.sum(axis=1)
+    return recalls, accuracy, embeddings, labels, acc_per_class
 
 class BalancedSampler(Sampler[int]):
 

@@ -167,17 +167,19 @@ def split_dataset(skes_joints, label, performer, camera, skes_name, save_path):
     assert len(skes_joints[examplar_indices]) == len(examplar_one_hot_labels)
     
     print("save data...")
-    np.savez('NTU_ALL_OS.npz', 
+    np.savez('NTU_ALL_OS_train.npz', 
             x_train = skes_joints[train_indices],
             y_train = train_one_hot_labels,
+            allow_pickle=False)
+    np.savez('NTU_ALL_OS_test.npz', 
             x_test = skes_joints[test_indices],
             y_test = test_one_hot_labels,
+            allow_pickle=False)
+    np.savez('NTU_ALL_OS_examplar.npz',
             x_examplar = skes_joints[examplar_indices],
             y_examplar = examplar_one_hot_labels,
             allow_pickle=False)
     
-    
-
 def extract_test_dict(examplar_txt_path):
     examplar_files = []
     test_classes = []
