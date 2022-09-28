@@ -354,7 +354,7 @@ class Model(nn.Module):
 
 class Model_lst_4part(nn.Module):
     def __init__(self, num_class=60, num_point=25, num_person=2, graph=None, graph_args=dict(), in_channels=3,
-                 drop_out=0, adaptive=True, head=['ViT-B/32'], k=0):
+                 drop_out=0, adaptive=True, head=['ViT-B/32'], k=0, recons=False):
         super(Model_lst_4part, self).__init__()
 
         if graph is None:
@@ -366,7 +366,7 @@ class Model_lst_4part(nn.Module):
         A = self.graph.A # 3,25,25
         self.A_vector = self.get_A(graph, k).float()
 
-
+        self.recons = recons
         self.num_class = num_class
         self.num_point = num_point
         self.data_bn = nn.BatchNorm1d(num_person * in_channels * num_point)
@@ -422,10 +422,11 @@ class Model_lst_4part(nn.Module):
         else:
             self.drop_out = lambda x: x
 
-        self.decode_layer_seq = nn.Linear(16, 64).cuda()
-        self.decode_layer1 = nn.Linear(6400, 700).cuda()
-        self.decode_layer2 = nn.Linear(700, 75).cuda()
-        self.init_weights()
+        if self.recons:
+            self.decode_layer_seq = nn.Linear(16, 64).cuda()
+            self.decode_layer1 = nn.Linear(6400, 700).cuda()
+            self.decode_layer2 = nn.Linear(700, 75).cuda()
+            self.init_weights()
     
     def init_weights(self) -> None:
         initrange = 0.1
@@ -516,9 +517,9 @@ class Model_lst_4part(nn.Module):
     def forward(self, input):
         x, feature_dict, self.logit_scale, [head_feature, hand_feature, hip_feature, foot_feature] = self.encode(input)
         # self.fc: classfier
-        reconstructed = self.decode(feature_dict)
-        feature_dict["reconstructed"] = reconstructed
-        breakpoint()
+        if self.recons:
+            reconstructed = self.decode(feature_dict)
+            feature_dict["reconstructed"] = reconstructed
         return self.fc(x), feature_dict, self.logit_scale, [head_feature, hand_feature, hip_feature, foot_feature]
 
 

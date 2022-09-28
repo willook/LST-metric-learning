@@ -290,18 +290,17 @@ class Processor():
 
     def edit_arg(self):
         date = datetime.date.today().isoformat()
+        config = self.arg.config.split(".")[0].split("/")[-1]
         model = "_".join(self.arg.model.split("."))
         method = self.arg.method
-        #model = self.arg.model if self.arg.model is not None else "CTRGCN" 
-        remark = self.arg.remark if self.arg.remark is not None else "" 
-        if remark == "":
-            self.arg.work_dir = Path("./work_dir/{}/{}_{}_{}".format(
-                date, model, method, self.arg.loss))
-        else:
-            self.arg.work_dir = Path("./work_dir/{}/{}_{}_{}_{}".format(
-                date, model, method, self.arg.loss, remark))
+        loss = self.arg.loss
+        remark = self.arg.remark 
+        work_dir = f"./work_dir/{date}/{config}_{model}_{method}_{loss}"
+        if remark is not None:
+            work_dir = f"{work_dir}_{remark}"
         if self.arg.test:
-            self.arg.work_dir = Path("./work_dir/{}/test".format(date))
+            work_dir = f"./work_dir/{date}/test"
+        self.arg.work_dir = Path(work_dir)
         
         # if self.arg.method == "mixing":
         #     self.arg.te_trainable = True
@@ -529,7 +528,7 @@ class Processor():
             # forward
             with torch.cuda.amp.autocast():
                 output, feature_dict, logit_scale, part_feature_list = self.model(data)
-                breakpoint()
+                
                 label_g = gen_label(label) # n by n 같은 라벨 표기
                 label = label.long().to(device)
                 loss_te_list = []
@@ -588,12 +587,14 @@ class Processor():
                         loss_te_list.append(loss_metric)
                     else:
                         raise NotImplementedError
-
-                loss_ce = self.loss_ce(output, label)
-                # loss_recons = self.loss_recons(output, label) # 1~2%
                 
-                loss = loss_ce + self.arg.loss_alpha * sum(loss_te_list) / len(loss_te_list)
-            
+                loss_ce = self.loss_ce(output, label)
+                loss = (loss_ce + self.arg.loss_alpha * sum(loss_te_list) / len(loss_te_list))
+                
+                # reconstructed = feature_dict['reconstructed'] * data.bool()
+                # loss_recons = self.loss_recons(data, reconstructed) 
+                # loss += loss_recons
+                
             self.losses_list.append(loss.data.cpu())
             scaler.scale(loss).backward()
 
@@ -643,7 +644,7 @@ class Processor():
                 self.best_acc = accuracy
                 self.best_acc_epoch = epoch + 1
                 acc_per_class_str = " ".join([f"{acc:.4f}" for acc in acc_per_class])
-                self.print_log(f'\tVar per Class: {np.var(acc_per_class)}')
+                self.print_log(f'\tStd per Class: {np.std(acc_per_class)}')
                 self.print_log(f'\tACC per Class: {acc_per_class_str}')
                 
                 #print(f'\tAcc per Class: {acc_per_class_str}')
