@@ -41,7 +41,6 @@ import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning) 
 
 classes, num_text_aug, text_dict = text_prompt_openai_pasta_pool_4part() # text_dict: id(0~4), [120, 77]
-num_text_aug = 1
 text_list = text_prompt_openai_random() # 120, 11, 1, 77
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -301,6 +300,9 @@ class Processor():
         if self.arg.test:
             work_dir = f"./work_dir/{date}/test"
         self.arg.work_dir = Path(work_dir)
+
+        if self.arg.phase == "test":
+            self.arg.work_dir = Path(os.path.dirname(self.arg.weights))
         
         # if self.arg.method == "mixing":
         #     self.arg.te_trainable = True
@@ -358,21 +360,23 @@ class Processor():
         self.loss_img = KLLoss().to(device) # multimodal image
         self.loss_text = KLLoss().to(device) # multimodal text
         self.loss_kl = KLLoss2().to(device)
-        # TODO: 아래 로스로 바꾸기
-        # self.loss_kl = torch.nn.KLDivLoss() # for mixing teacher - student
+        # TODO 아래로 바꾸기
+        # self.loss_kl = KLLoss3().to(device) # for mixing teacher - student
+
         self.loss_recons = torch.nn.MSELoss()
         
         self.proxy = False
-        if self.arg.loss == "proxy_anchor":
+        loss = self.arg.loss.lower()
+        if loss == "proxy_anchor":
             self.loss_me_s = Proxy_Anchor(nb_classes = self.arg.model_args['num_class'], 
                                         sz_embed = 512, mrg = 0.1, alpha = 32).cuda()
             self.loss_me_t = Proxy_Anchor(nb_classes = self.arg.model_args['num_class'], 
                                         sz_embed = 512, mrg = 0.1, alpha = 32).cuda()
             self.proxy = True
-        elif self.arg.loss == "supcon":
+        elif loss == "supcon":
             self.loss_me_s = SupConLoss(temperature=0.1)
             self.loss_me_t = SupConLoss(temperature=0.1)
-        elif self.arg.loss == "ms":
+        elif loss == "ms":
             self.loss_me_s = MultiSimilarityLoss(alpha=2, beta=50, base=0.5)
             self.loss_me_t = MultiSimilarityLoss(alpha=2, beta=50, base=0.5)
         else:
@@ -385,7 +389,7 @@ class Processor():
             # model_, preprocess = clip.load('ViT-L/14', device)
             del model_.visual
             if self.arg.method == "multimodal":
-                model_text = TextCLIP(model_)
+                model_text = TextCLIP(model_, additional_layers=True, name=name)
             elif self.arg.method == "mixing":
                 model_text = TextCLIP(model_, additional_layers=True, name=name, mixing=True)
             else:
@@ -528,7 +532,6 @@ class Processor():
             # forward
             with torch.cuda.amp.autocast():
                 output, feature_dict, logit_scale, part_feature_list = self.model(data)
-                
                 label_g = gen_label(label) # n by n 같은 라벨 표기
                 label = label.long().to(device)
                 loss_te_list = []
@@ -641,6 +644,7 @@ class Processor():
                 self.save_model(epoch)
             
             if accuracy > self.best_acc:
+                utils.save_tsne_plot(test_embeddings, test_labels, self.arg.work_dir, epoch=epoch)
                 self.best_acc = accuracy
                 self.best_acc_epoch = epoch + 1
                 acc_per_class_str = " ".join([f"{acc:.4f}" for acc in acc_per_class])
@@ -725,6 +729,7 @@ class Processor():
             self.print_log('Model:   {}.'.format(self.arg.model))
             self.print_log('Weights: {}.'.format(self.arg.weights))
             self.eval(epoch=0, save_score=self.arg.save_score, loader_name=['test'], wrong_file=wf, result_file=rf)
+            #utils.save_tsne_plot(embeddings, labels, root, num_classes=121, epoch=0)
             self.print_log('Done.\n')
 
 if __name__ == '__main__':
