@@ -39,13 +39,38 @@ class KLLoss2(nn.Module):
     def __init__(self):
         super().__init__()
         print('=========using batch KL Loss==========')
-        self.error_metric = nn.KLDivLoss(reduction='mean')
+        #self.error_metric = nn.KLDivLoss(reduction='mean')
+        self.error_metric = nn.KLDivLoss()
 
     def forward(self, prediction, label):
         batch_size = prediction.shape[0]
         probs1 = F.log_softmax(prediction, 1)
         probs2 = F.softmax(label * 10, 1)
         loss = self.error_metric(probs1, probs2) * batch_size
+        return loss
+    
+
+class KLLoss3(nn.Module):
+    """Loss that uses a 'hinge' on the lower bound.
+    This means that for samples with a label value smaller than the threshold, the loss is zero if the prediction is
+    also smaller than that threshold.
+    args:
+        error_matric:  What base loss to use (MSE by default).
+        threshold:  Threshold to use for the hinge.
+        clip:  Clip the loss if it is above this value.
+    """
+
+    def __init__(self):
+        super().__init__()
+        print('=========using batch KL Loss==========')
+        self.error_metric = nn.KLDivLoss(reduction='batchmean')
+
+    def forward(self, prediction, label):
+        # batch_size = prediction.shape[0]
+        probs1 = F.log_softmax(prediction, 1)
+        probs2 = F.softmax(label, 1)
+        F.softmax(prediction), F.softmax(label)
+        loss = self.error_metric(probs1, probs2)
         return loss
     
 
