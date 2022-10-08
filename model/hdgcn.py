@@ -8,7 +8,7 @@ import numpy as np
 from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
 
-from graph.tools import get_groups
+from graph_hd.tools import get_groups
 
 def import_class(name):
     components = name.split('.')
@@ -404,9 +404,10 @@ class TCN_GCN_unit(nn.Module):
 
 class Model(nn.Module):
     def __init__(self, num_class=60, num_point=25, num_person=2, graph=None, graph_args=dict(), in_channels=3,
-                 drop_out=0, adaptive=True, compute_flops=False):
+                 drop_out=0, adaptive=True, head=['ViT-B/32'], compute_flops=False):
         super(Model, self).__init__()
-
+        self.head = head
+        self.logit_scale = nn.Parameter(torch.ones(1,5) * np.log(1 / 0.07))
         if graph is None:
             raise ValueError()
         elif compute_flops is False:
@@ -445,6 +446,10 @@ class Model(nn.Module):
             self.drop_out = nn.Dropout(drop_out)
         else:
             self.drop_out = lambda x: x
+        #self.linear_head['ViT-B/32'] = nn.Linear(256,512)
+        self.linear_head = nn.ModuleDict()
+        self.linear_head['ViT-B/32'] = nn.Linear(256,256)
+        conv_init(self.linear_head['ViT-B/32'])
 
     def forward(self, x):
         N, C, T, V, M = x.size()
@@ -469,40 +474,51 @@ class Model(nn.Module):
         x = x.mean(3).mean(1)
         x = self.drop_out(x)
 
-        return self.fc(x) 
+        feature_dict = dict()
+        for name in self.head:
+            feature_dict[name] = self.linear_head[name](x) # linear projection
+        # feature_dict["seq_feature"] = feature
+        x = self.drop_out(x) # nothing
+
+        return self.fc(x), feature_dict[name], self.logit_scale, None
 
 
 class Model_lst_4part(nn.Module):
     def __init__(self, num_class=60, num_point=25, num_person=2, graph=None, graph_args=dict(), in_channels=3,
-                 drop_out=0, adaptive=True, head=['ViT-B/32'], k=0, recons=False):
+                 drop_out=0, adaptive=True, head=['ViT-B/32'], compute_flops=False):
         super(Model_lst_4part, self).__init__()
 
         if graph is None:
             raise ValueError()
-        else:
+        elif compute_flops is False:
             Graph = import_class(graph)
             self.graph = Graph(**graph_args)
+            A, CoM = self.graph.A
+        else:
+            A, CoM = graph.A
+        
+        ## A : L, 3, 25, 25
+        
+        self.dataset = 'NTU' if num_point == 25 else 'UCLA'
 
-        A = self.graph.A # 3,25,25
-        self.A_vector = self.get_A(graph, k).float()
-
-        self.recons = recons
         self.num_class = num_class
         self.num_point = num_point
         self.data_bn = nn.BatchNorm1d(num_person * in_channels * num_point)
 
-        base_channel = 64
-        self.l1 = TCN_GCN_unit(in_channels, base_channel, A, residual=False, adaptive=adaptive)
-        self.l2 = TCN_GCN_unit(base_channel, base_channel, A, adaptive=adaptive)
-        self.l3 = TCN_GCN_unit(base_channel, base_channel, A, adaptive=adaptive)
-        self.l4 = TCN_GCN_unit(base_channel, base_channel, A, adaptive=adaptive)
-        self.l5 = TCN_GCN_unit(base_channel, base_channel*2, A, stride=2, adaptive=adaptive)
-        self.l6 = TCN_GCN_unit(base_channel*2, base_channel*2, A, adaptive=adaptive)
-        self.l7 = TCN_GCN_unit(base_channel*2, base_channel*2, A, adaptive=adaptive)
-        self.l8 = TCN_GCN_unit(base_channel*2, base_channel*4, A, stride=2, adaptive=adaptive)
-        self.l9 = TCN_GCN_unit(base_channel*4, base_channel*4, A, adaptive=adaptive)
-        self.l10 = TCN_GCN_unit(base_channel*4, base_channel*4, A, adaptive=adaptive)
+        base_channels = 64
 
+        self.l1 = TCN_GCN_unit(3, base_channels, A, residual=False, adaptive=adaptive, att=False, CoM=CoM)
+        self.l2 = TCN_GCN_unit(base_channels, base_channels, A, adaptive=adaptive, CoM=CoM)
+        self.l3 = TCN_GCN_unit(base_channels, base_channels, A, adaptive=adaptive, CoM=CoM)
+        self.l4 = TCN_GCN_unit(base_channels, base_channels, A, adaptive=adaptive, CoM=CoM)
+        self.l5 = TCN_GCN_unit(base_channels, base_channels*2, A, stride=2, adaptive=adaptive, CoM=CoM)
+        self.l6 = TCN_GCN_unit(base_channels*2, base_channels*2, A, adaptive=adaptive, CoM=CoM)
+        self.l7 = TCN_GCN_unit(base_channels*2, base_channels*2, A, adaptive=adaptive, CoM=CoM)
+        self.l8 = TCN_GCN_unit(base_channels*2, base_channels*4, A, stride=2, adaptive=adaptive, CoM=CoM)
+        self.l9 = TCN_GCN_unit(base_channels*4, base_channels*4, A, adaptive=adaptive, CoM=CoM)
+        self.l10 = TCN_GCN_unit(base_channels*4, base_channels*4, A, adaptive=adaptive, CoM=CoM)
+
+        self.fc = nn.Linear(base_channels*4, num_class)
         self.linear_head = nn.ModuleDict()
         self.logit_scale = nn.Parameter(torch.ones(1,5) * np.log(1 / 0.07))
 
@@ -512,29 +528,9 @@ class Model_lst_4part(nn.Module):
             self.part_list.append(nn.Linear(256,512))
 
         self.head = head
-        if 'ViT-B/32' in self.head:
-            self.linear_head['ViT-B/32'] = nn.Linear(256,512)
-            conv_init(self.linear_head['ViT-B/32'])
-        
-        if 'ViT-B/16' in self.head:
-            self.linear_head['ViT-B/16'] = nn.Linear(256,512)
-            conv_init(self.linear_head['ViT-B/16'])
-        if 'ViT-L/14' in self.head:
-            self.linear_head['ViT-L/14'] = nn.Linear(256,768)
-            conv_init(self.linear_head['ViT-L/14'])
-        if 'ViT-L/14@336px' in self.head:
-            self.linear_head['ViT-L/14@336px'] = nn.Linear(256,768)
-            conv_init(self.linear_head['ViT-L/14@336px'])
-        
-        if 'RN50x64' in self.head:
-            self.linear_head['RN50x64'] = nn.Linear(256,1024)
-            conv_init(self.linear_head['RN50x64'])
+        self.linear_head['ViT-B/32'] = nn.Linear(256,512)
+        conv_init(self.linear_head['ViT-B/32'])
 
-        if 'RN50x16' in self.head:
-            self.linear_head['RN50x16'] = nn.Linear(256,768)
-            conv_init(self.linear_head['RN50x16'])
-
-        self.fc = nn.Linear(base_channel*4, num_class)
         nn.init.normal_(self.fc.weight, 0, math.sqrt(2. / num_class))
         bn_init(self.data_bn, 1)
         if drop_out:
@@ -542,43 +538,13 @@ class Model_lst_4part(nn.Module):
         else:
             self.drop_out = lambda x: x
 
-        if self.recons:
-            self.decode_layer_seq = nn.Linear(16, 64).cuda()
-            self.decode_layer1 = nn.Linear(6400, 700).cuda()
-            self.decode_layer2 = nn.Linear(700, 75).cuda()
-            self.init_weights()
-    
-    def init_weights(self) -> None:
-        initrange = 0.1
-        #TODO 다른 layer 들도 init 하기
-        self.decode_layer_seq.weight.data.uniform_(-initrange, initrange)
-        self.decode_layer1.weight.data.uniform_(-initrange, initrange)
-        self.decode_layer2.weight.data.uniform_(-initrange, initrange)
-            
-    def get_A(self, graph, k):
-        Graph = import_class(graph)()
-        A_outward = Graph.A_outward_binary
-        I = np.eye(Graph.num_node)
-        if k == 0:
-            return torch.from_numpy(I)
-        return  torch.from_numpy(I - np.linalg.matrix_power(A_outward, k))
-    
     def encode(self, x):
-        if len(x.shape) == 3:
-            N, T, VC = x.shape
-            x = x.view(N, T, self.num_point, -1).permute(0, 3, 1, 2).contiguous().unsqueeze(-1)
         N, C, T, V, M = x.size()
-        # torch.Size([100, 3, 64, 25, 2])
-        x = rearrange(x, 'n c t v m -> (n m t) v c', m=M, v=V).contiguous()
-        # torch.Size([12800, 25, 3])
-        x = self.A_vector.to(x.device).expand(N*M*T, -1, -1) @ x
-        x = rearrange(x, '(n m t) v c -> n (m v c) t', m=M, t=T).contiguous()
-        # torch.Size([100, 150, 64]), n: batch size, 
+        x = rearrange(x, 'n c t v m -> n (m v c) t')
         x = self.data_bn(x)
-        x = x.view(N, M, V, C, T).permute(0, 1, 3, 4, 2).contiguous().view(N * M, C, T, V)
-        # torch.Size([200, 3, 64, 25])
+        x = rearrange(x, 'n (m v c) t -> (n m) c t v', m=M, v=V)
+
         x = self.l1(x)
-        # torch.Size([200, 64, 64, 25])
         x = self.l2(x)
         x = self.l3(x)
         x = self.l4(x)
@@ -588,7 +554,7 @@ class Model_lst_4part(nn.Module):
         x = self.l8(x)
         x = self.l9(x)
         x = self.l10(x)
-        # torch.Size([200, 256, 16, 25])
+
         # N*M,C,T,V
         c_new = x.size(1)
         feature = x.view(N,M,c_new,T//4,V) # torch.Size([100, 2, 256, 16, 25])
@@ -596,8 +562,6 @@ class Model_lst_4part(nn.Module):
         hand_list = torch.Tensor([4,5,6,7,8,9,10,11,21,22,23,24]).long()
         foot_list = torch.Tensor([12,13,14,15,16,17,18,19]).long()
         hip_list = torch.Tensor([0,1,2,12,16]).long()
-        # self.part_list[0]: linear function
-        # torch.Size([100, 256])
         head_feature = self.part_list[0](feature[:,:,:,:,head_list].mean(4).mean(3).mean(1))
         hand_feature = self.part_list[1](feature[:,:,:,:,hand_list].mean(4).mean(3).mean(1))
         foot_feature = self.part_list[2](feature[:,:,:,:,foot_list].mean(4).mean(3).mean(1))
@@ -612,32 +576,11 @@ class Model_lst_4part(nn.Module):
             feature_dict[name] = self.linear_head[name](x) # linear projection
         feature_dict["seq_feature"] = feature
         x = self.drop_out(x) # nothing
-        # self.fc: classfier
+
         return x, feature_dict, self.logit_scale, [head_feature, hand_feature, hip_feature, foot_feature]
     
-    def decode(self, feature_dict):
-        # N, C, T, V, M = x.size()
-        # torch.Size([100, 3, 64, 25, 2])
-        # x = x.view(N, M, V, C, T).permute(0, 1, 3, 4, 2).contiguous().view(N * M, C, T, V)
-        # N: batch
-        # M: number of person
-        # T: length of seq
-        # V: number of joint
-        # C: xyz
-        x = feature_dict["seq_feature"] # torch.Size([100, 2, 256, 16, 25])
-        N, M, C, T, V = x.size()
-        x = x.permute(0, 1, 2, 4, 3)
-        x = self.decode_layer_seq(x) # torch.Size([100, 2, 256, 25, 64])
-        x = x.permute(0, 1, 4, 3, 2).contiguous().view(N, M, T*4, C*V) # 100 2 64 25 *256
-        x = self.decode_layer1(x)
-        x = self.decode_layer2(x)
-        reconstructed = x.view(N, M, T*4, 25, 3).permute(0, 4, 2, 3, 1)
-        return reconstructed
-        
+    
     def forward(self, input):
         x, feature_dict, self.logit_scale, [head_feature, hand_feature, hip_feature, foot_feature] = self.encode(input)
         # self.fc: classfier
-        if self.recons:
-            reconstructed = self.decode(feature_dict)
-            feature_dict["reconstructed"] = reconstructed
         return self.fc(x), feature_dict, self.logit_scale, [head_feature, hand_feature, hip_feature, foot_feature]
