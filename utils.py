@@ -1,13 +1,16 @@
 import argparse
 import random
 import pickle
+from pathlib import Path
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
+import matplotlib.pyplot as plt
 from sklearn.metrics import accuracy_score, confusion_matrix
+from sklearn.manifold import TSNE
 from torch.utils.data.sampler import Sampler
 from typing import Sized
 from tqdm import tqdm
@@ -304,6 +307,66 @@ def evaluate_one_shot(model, dl_ev, dl_ex):
     matrix = confusion_matrix(knn_labels_cpu, query_labels_cpu)
     acc_per_class = matrix.diagonal()/matrix.sum(axis=1)
     return recalls, accuracy, embeddings, labels, acc_per_class
+
+def get_cmap(n, name='tab20'):
+    '''Returns a function that maps each index in 0, 1, ..., n-1 to a distinct 
+    RGB color; the keyword argument name must be a standard mpl colormap name.'''
+    return plt.cm.get_cmap(name, n)
+
+def random_sampling_per_class(embeddings, labels, n_sample=100):
+    class_dict = {}
+    for i, label in enumerate(labels.reshape(-1)):
+        if label not in class_dict:
+            class_dict[label] = []
+        class_dict[label].append(i)
+    sampled_embeddings_list = []
+    sampled_labels_list = []
+    for label, indice in class_dict.items():
+        if len(indice) < n_sample:
+            n_sample = len(indice) 
+        sampled_indice = random.sample(indice, n_sample)
+        sampled_labels_list.append(np.full(n_sample, label))
+        sampled_embeddings_list.append(embeddings[sampled_indice])
+    
+    sampled_labels = np.concatenate(sampled_labels_list)
+    sampled_embeddings = np.concatenate(sampled_embeddings_list)
+    return sampled_embeddings, sampled_labels
+
+def get_labelnames():
+    labelnames = []
+    with open('text/pasta_openai_t01.txt') as infile:
+        lines = infile.readlines()
+        for ind, line in enumerate(lines):
+            temp_list = line.rstrip().lstrip().split(';')[0]
+            labelnames.append(temp_list)
+    return labelnames
+
+def save_tsne_plot(embeddings, labels, root, num_classes=121, epoch=0):
+    cmap = get_cmap(num_classes)
+    file_name = Path(root) / f"tsne_plot_epoch_{epoch}.png"
+    embeddings = embeddings.to('cpu').numpy()
+    labels = labels.to('cpu').numpy()
+    embeddings, labels = random_sampling_per_class(embeddings, labels, n_sample=200)
+    
+    tsne_embedded = TSNE(n_components=2, learning_rate='auto',
+                        init='random').fit_transform(embeddings)
+    
+    #plt.title(model_path)
+    labelnames = get_labelnames()
+    plotted_labels = set()
+    for embedding, label in tqdm(zip(tsne_embedded, labels)):
+        if label in plotted_labels:
+            continue
+        plotted_labels.add(label)
+        ind = (labels == label)
+        selected_embeddings = tsne_embedded[ind]
+        xs, ys = selected_embeddings[:,0], selected_embeddings[:,1]
+        labelname = f"no{label+1}. {labelnames[label]}"
+        plt.scatter(xs, ys, color=cmap(label), s=7, label=labelname)
+    plt.legend(loc="center right", bbox_to_anchor=(1.5, 0.5))
+    plt.savefig(file_name, bbox_inches='tight')
+    plt.clf()
+
 
 class BalancedSampler(Sampler[int]):
 
