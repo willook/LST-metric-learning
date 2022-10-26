@@ -627,8 +627,10 @@ class Model_lst_4part_bone(nn.Module):
         c_new = x.size(1)
 
         feature = x.view(N,M,c_new,T//4,V)
-        head_list = torch.Tensor([2,3]).long()
-        hand_list = torch.Tensor([4,5,6,7,8,9,10,11,20,22,23,24]).long()
+        # head_list = torch.Tensor([2,3]).long()
+        # hand_list = torch.Tensor([4,5,6,7,8,9,10,11,20,22,23,24]).long()
+        head_list = torch.Tensor([2,3,20]).long()
+        hand_list = torch.Tensor([4,5,6,7,8,9,10,11,21,22,23,24]).long()
         foot_list = torch.Tensor([12,13,14,15,16,17,18,19]).long()
         hip_list = torch.Tensor([0,1,12,16]).long()
         head_feature = self.part_list[0](feature[:,:,:,:,head_list].mean(4).mean(3).mean(1))
