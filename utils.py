@@ -341,33 +341,82 @@ def get_labelnames():
             labelnames.append(temp_list)
     return labelnames
 
-def save_tsne_plot(embeddings, labels, root, num_classes=121, epoch=0):
-    cmap = get_cmap(num_classes)
-    file_name = Path(root) / f"tsne_plot_epoch_{epoch}.png"
+def save_tsne_plot(embeddings, labels, root, phase, num_classes=121, format="png", max_classes=20, seed=1234):
+    
+    file_name = Path(root) / f"tsne_plot_{phase}.{format}"
+    random.seed(seed)
+    tsne_embeddings, labels, selected_labels = get_tsne(embeddings, labels, phase, seed=seed)
+    plot_tsne(tsne_embeddings, labels, selected_labels)
+    
+    # plt.legend(loc="center right", bbox_to_anchor=(1.5, 0.5))
+    # file_name = Path(root) / f"tsne_plots.{format}"
+    plt.savefig(file_name, bbox_inches='tight', format=format)
+    plt.clf()
+
+def get_tsne(embeddings, labels, phase, seed=1234):
     embeddings = embeddings.to('cpu').numpy()
     labels = labels.to('cpu').numpy()
     embeddings, labels = random_sampling_per_class(embeddings, labels, n_sample=200)
     
-    tsne_embedded = TSNE(n_components=2, learning_rate='auto',
-                        init='random').fit_transform(embeddings)
+    selected_labels = set()
+    selected_ind = (labels == -10)
+    if phase == "train":
+        selected_labels = [x*6+1 for x in range(20)]
+    else: # "test" or int (epoch, evaluation during training)
+        selected_labels = [x*6 for x in range(20)]
     
-    #plt.title(model_path)
+    if phase == "train":
+        for label in selected_labels:
+            # if int(label) == 49 or int(label) == 52:
+            #     continue
+            # if label in selected_labels:
+            #     continue
+            # selected_labels.add(label)
+            ind = (labels == label)
+            selected_ind += ind
+        
+        embeddings = embeddings[selected_ind]
+        labels = labels[selected_ind]
+    
+    tsne_embedded = TSNE(n_components=2, learning_rate='auto',
+                        init='random', random_state=seed).fit_transform(embeddings)
+    
+    return tsne_embedded, labels, selected_labels
+
+def plot_tsne(tsne_embedded, labels, selected_labels, num_classes=121):
+    cmap = get_cmap(num_classes)
     labelnames = get_labelnames()
     plotted_labels = set()
-    for embedding, label in tqdm(zip(tsne_embedded, labels)):
-        if label in plotted_labels:
-            continue
-        plotted_labels.add(label)
+    #for embedding, label in tqdm(zip(tsne_embedded, labels)):
+    for label in selected_labels:
         ind = (labels == label)
+        # if label in plotted_labels:
+        #     continue
+        # plotted_labels.add(label)
+        # ind = (labels == label)
+        # breakpoint()
         selected_embeddings = tsne_embedded[ind]
         xs, ys = selected_embeddings[:,0], selected_embeddings[:,1]
-        labelname = f"no{label+1}. {labelnames[label]}"
+        # labelname = f"no{label+1}. {labelnames[label]}"
+        labelname = f"{labelnames[label]} ({label+1})"
         plt.scatter(xs, ys, color=cmap(label), s=7, label=labelname)
+        
     plt.legend(loc="center right", bbox_to_anchor=(1.5, 0.5))
-    plt.savefig(file_name, bbox_inches='tight')
+
+def save_tsne_subplots(train_embeddings, train_labels, test_embeddings, test_labels, root, format="png"):
+    train_tsne, train_labels, train_selected_labels = get_tsne(train_embeddings, train_labels, phase="train")
+    test_tsne, test_labels, test_selected_labels = get_tsne(test_embeddings, test_labels, phase="test")
+
+    plt.subplot(1, 2, 1)  
+    plot_tsne(train_tsne, train_labels, train_selected_labels)
+    plt.subplot(1, 2, 2)   
+    plot_tsne(test_tsne, test_labels, test_selected_labels)
+    
+    # plt.legend(loc="center right", bbox_to_anchor=(1.5, 0.5))
+    file_name = Path(root) / f"tsne_plots.{format}"
+    plt.savefig(file_name, bbox_inches='tight', format=format)
     plt.clf()
-
-
+    
 class BalancedSampler(Sampler[int]):
 
     data_source: Sized
