@@ -226,6 +226,7 @@ def get_parser():
     parser.add_argument('--method', type=str, default='mixing')
     parser.add_argument('--test', action='store_true', default=False)
     parser.add_argument('--loss', type=str, default="supcon")
+    parser.add_argument('--num_text_aug', type=int, default=None)
     return parser
 
 
@@ -288,13 +289,18 @@ class Processor():
         #                 output_device=self.output_device)
 
     def edit_arg(self):
+        global num_text_aug
         date = datetime.date.today().isoformat()
         config = self.arg.config.split(".")[0].split("/")[-1]
         model = "_".join(self.arg.model.split("."))
         method = self.arg.method
         loss = self.arg.loss
         remark = self.arg.remark 
-        work_dir = f"./work_dir/{date}/{config}_{model}_{method}_{loss}"
+        
+        if self.arg.num_text_aug is not None:
+            num_text_aug = int(self.arg.num_text_aug)
+            
+        work_dir = f"./work_dir/{date}/{config}_{model}_{method}_{loss}_{num_text_aug}"
         if remark is not None:
             work_dir = f"{work_dir}_{remark}"
         if self.arg.test:
@@ -329,6 +335,14 @@ class Processor():
                 dataset=Feeder(**self.arg.train_feeder_args),
                 batch_size=self.arg.batch_size,
                 shuffle=True,
+                num_workers=self.arg.num_worker,
+                drop_last=True,
+                worker_init_fn=init_seed)
+        else:
+            self.data_loader['train'] = torch.utils.data.DataLoader(
+                dataset=Feeder(**self.arg.train_feeder_args),
+                batch_size=self.arg.batch_size,
+                shuffle=False,
                 num_workers=self.arg.num_worker,
                 drop_last=True,
                 worker_init_fn=init_seed)
@@ -642,9 +656,27 @@ class Processor():
             self.accuracy_list.append(accuracy)
             if accuracy > self.best_acc or save_model:
                 self.save_model(epoch)
+            format = "png"
             
+            if self.arg.phase == 'test':
+                train_embeddings, train_labels = utils.predict_batchwise(self.model, self.data_loader['train'])
+                utils.save_tsne_plot(train_embeddings, train_labels, self.arg.work_dir, 
+                                     format=format, phase="train")
+                utils.save_tsne_subplots(train_embeddings, train_labels, 
+                                    test_embeddings, test_labels, self.arg.work_dir, format=format)
+                #train_embeddings = l2_norm(train_embeddings)
+
+                _saved_path = arg.weights.split('.')[0]
+                saved_path = f'saved_embeddings/{_saved_path}'
+                os.makedirs(saved_path, exist_ok=True)
+                torch.save({'train': [train_embeddings, train_labels],
+                            'test': [test_embeddings, test_labels]},
+                            f'{saved_path}/embeddings.pt')
+                print(f"Save the embeddings as {saved_path}/embeddings.pt")
+                
             if accuracy > self.best_acc:
-                utils.save_tsne_plot(test_embeddings, test_labels, self.arg.work_dir, epoch=epoch)
+                utils.save_tsne_plot(test_embeddings, test_labels, self.arg.work_dir, 
+                                     format=format, phase=epoch)
                 self.best_acc = accuracy
                 self.best_acc_epoch = epoch + 1
                 acc_per_class_str = " ".join([f"{acc:.4f}" for acc in acc_per_class])
